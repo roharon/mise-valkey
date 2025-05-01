@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# This script lists all available versions of Valkey by querying GitHub releases
+
+# GitHub API URL for Valkey releases
+GITHUB_REPO="valkey-io/valkey"
+GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/tags"
+DOWNLOAD_URL_BASE="https://github.com/${GITHUB_REPO}/releases"
+
+sort_versions() {
+  sed 'h; s/[+-]/./g; s/.p\([[:digit:]]\)/.z\1/; G; s/\n/ /' | \
+    LC_ALL=C sort -t. -k 1,1 -k 2,2n -k 3,3n -k 4,4n -k 5,5n | awk '{print $2}'
+}
+
+# Get versions from GitHub tags
+get_github_versions() {
+  if command -v curl &>/dev/null; then
+    curl -s "$GITHUB_API_URL" | grep -o '"name": "[^"]*"' | sed 's/"name": "\(.*\)"/\1/g' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+  elif command -v wget &>/dev/null; then
+    wget -q -O- "$GITHUB_API_URL" | grep -o '"name": "[^"]*"' | sed 's/"name": "\(.*\)"/\1/g' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+  else
+    return 1
+  fi
+}
+
+# Fallback: Get versions from download URL
+get_download_versions() {
+  if command -v curl &>/dev/null; then
+    curl -s "$DOWNLOAD_URL_BASE" | grep -o 'valkey-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-[^"]*\.tar\.gz' | sed -E 's/valkey-([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?).*/\1/g' | sort -u
+  elif command -v wget &>/dev/null; then
+    wget -q -O- "$DOWNLOAD_URL_BASE" | grep -o 'valkey-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-[^"]*\.tar\.gz' | sed -E 's/valkey-([0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?).*/\1/g' | sort -u
+  else
+    return 1
+  fi
+}
+
+# Get all available versions
+list_all_versions() {
+  # First try GitHub API
+  local versions=$(get_github_versions)
+  
+  # If GitHub API fails, try the download site
+  if [ -z "$versions" ]; then
+    versions=$(get_download_versions)
+  fi
+  
+  # Use hardcoded fallback versions if all else fails
+  if [ -z "$versions" ]; then
+    echo "7.2.9 8.1.1"
+  else
+    echo "$versions"
+  fi
+}
+
+echo $(list_all_versions | sort_versions | uniq)

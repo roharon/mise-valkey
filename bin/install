@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Constants
+PLUGIN_DIR="$(dirname "$(dirname "$0")")"
+DOWNLOAD_DIR="$PLUGIN_DIR/tmp"
+
+# GitHub repositories
+VALKEY_REPO="valkey-io/valkey"
+GITHUB_RELEASES_URL="https://github.com/${VALKEY_REPO}/releases/download"
+GITHUB_SOURCE_URL="https://github.com/${VALKEY_REPO}/archive/refs/tags"
+
+# Create temporary directory
+mkdir -p "$DOWNLOAD_DIR"
+
+install_valkey() {
+  local version="$1"
+  local install_path="$2"
+  local download_path="${DOWNLOAD_DIR}/valkey-${version}.tar.gz"
+  local download_success=false
+  
+  mkdir -p "$install_path/bin"
+  
+  echo "Downloading Valkey ${version} from GitHub releases..."
+  
+  # Try the GitHub release binary first
+  local binary_url="${GITHUB_RELEASES_URL}/v${version}/valkey-${version}.tar.gz"
+  echo "Trying binary URL: ${binary_url}"
+  
+  if command -v curl &>/dev/null; then
+    if curl --output /dev/null --silent --head --fail "$binary_url"; then
+      echo "Found binary release: ${binary_url}"
+      if curl -fsSL "$binary_url" -o "$download_path"; then
+        download_success=true
+      fi
+    fi
+  elif command -v wget &>/dev/null; then
+    if wget --spider -q "$binary_url" 2>/dev/null; then
+      echo "Found binary release: ${binary_url}"
+      if wget -q "$binary_url" -O "$download_path"; then
+        download_success=true
+      fi
+    fi
+  fi
+  
+  # If binary download fails, try source code
+  if [ "$download_success" != "true" ]; then
+    echo "Binary release not found. Downloading source code..."
+    
+    local source_url="${GITHUB_SOURCE_URL}/${version}.tar.gz"
+    echo "Trying source URL: ${source_url}"
+    
+    if command -v curl &>/dev/null; then
+      if curl --output /dev/null --silent --head --fail "$source_url"; then
+        echo "Found source code: ${source_url}"
+        if curl -fsSL "$source_url" -o "$download_path"; then
+          download_success=true
+        fi
+      fi
+    elif command -v wget &>/dev/null; then
+      if wget --spider -q "$source_url" 2>/dev/null; then
+        echo "Found source code: ${source_url}"
+        if wget -q "$source_url" -O "$download_path"; then
+          download_success=true
+        fi
+      fi
+    fi
+  fi
+
+  if [ "$download_success" != "true" ]; then
+    echo "Error: Failed to download Valkey ${version}"
+    echo "Please verify the version exists on GitHub: https://github.com/${VALKEY_REPO}/releases"
+    echo "Or try 'bin/list-all' to see available versions"
+    exit 1
+  fi
+
+  # Extract the tarball
+  echo "Extracting Valkey ${version}..."
+  tar -xzf "$download_path" -C "$DOWNLOAD_DIR" || {
+    echo "Error: Failed to extract Valkey ${version}"
+    exit 1
+  }
+  
+  # Find the extracted directory
+  local extracted_dir
+  extracted_dir="$(find "$DOWNLOAD_DIR" -type d -name "*valkey*" -maxdepth 1 | head -n1)"
+  
+  # If not found with valkey in the name, look for any directory
+  if [ -z "$extracted_dir" ]; then
+    extracted_dir="$(find "$DOWNLOAD_DIR" -type d -maxdepth 1 | grep -v "^$DOWNLOAD_DIR$" | head -n1)"
+  fi
+  
+  if [ -z "$extracted_dir" ] || [ ! -d "$extracted_dir" ]; then
+    echo "Error: Failed to locate extracted Valkey files"
+    exit 1
+  fi
+
+  echo "Using extracted directory: $extracted_dir"
+  cd "$extracted_dir"
+
+  # Build from source if needed
+  if [ ! -f "src/valkey-server" ] && [ -f "Makefile" ]; then
+    echo "Building Valkey from source..."
+    make || {
+      echo "Error: Failed to build Valkey"
+      exit 1
+    }
+  fi
+
+  # Copy binaries to the install path
+  echo "Installing Valkey binaries..."
+  local installed_count=0
+  local binary_locations=("src" "." "bin")
+  local binary_names=("valkey-server" "valkey-cli" "valkey-sentinel" "valkey-benchmark")
+  
+  for location in "${binary_locations[@]}"; do
+    if [ -d "$location" ]; then
+      for binary in "${binary_names[@]}"; do
+        if [ -f "$location/$binary" ] && [ -x "$location/$binary" ]; then
+          cp "$location/$binary" "$install_path/bin/"
+          chmod +x "$install_path/bin/$binary"
+          echo "Installed: $binary"
+          ((installed_count++))
+        fi
+      done
+    fi
+  done
+
+  # Create symlinks
+  if [ -f "$install_path/bin/valkey-server" ]; then
+    ln -sf "$install_path/bin/valkey-server" "$install_path/bin/valkey"
+    echo "Created symlink: valkey → valkey-server"
+  fi
+  
+  if [ "$installed_count" -gt 0 ]; then
+    echo "Valkey ${version} installed successfully!"
+  else
+    echo "Error: No valkey binaries found"
+    exit 1
+  fi
+  
+  # Cleanup
+  cd "$PLUGIN_DIR"
+  rm -rf "$DOWNLOAD_DIR"
+}
+
+# Main
+# Use MISE variables if available, fall back to ASDF variables for compatibility
+INSTALL_VERSION="${MISE_INSTALL_VERSION:-${ASDF_INSTALL_VERSION}}"
+INSTALL_PATH="${MISE_INSTALL_PATH:-${ASDF_INSTALL_PATH}}"
+
+# Validate required variables
+if [ -z "$INSTALL_VERSION" ]; then
+  echo "Error: No installation version specified. Please set MISE_INSTALL_VERSION or ASDF_INSTALL_VERSION." >&2
+  exit 1
+fi
+
+if [ -z "$INSTALL_PATH" ]; then
+  echo "Error: No installation path specified. Please set MISE_INSTALL_PATH or ASDF_INSTALL_PATH." >&2
+  exit 1
+fi
+
+install_valkey "$INSTALL_VERSION" "$INSTALL_PATH"
